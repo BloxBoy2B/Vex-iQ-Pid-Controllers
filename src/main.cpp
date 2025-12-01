@@ -74,7 +74,7 @@ int whenStarted1()
 #include "vex.h"
 
 // This function turns the robot to a given heading using PID
-void turnToHeadingPID(double targetHeading)
+void turnToHeadingPID(double targetHeading, double timeOut)
 {
   angularIntegral = 0;
   angularPreviousError = 0;
@@ -88,6 +88,8 @@ void turnToHeadingPID(double targetHeading)
   double kd = 0.3;
 
   int threshold = 2;
+
+  timer myTimer;
 
   while (true)
   {
@@ -125,7 +127,7 @@ void turnToHeadingPID(double targetHeading)
     RightMotor.spin(forward, -speed, percent);
 
     // Break loop if heading is close enough
-    if (fabs(error) <= threshold)
+    if (fabs(error) <= threshold || myTimer.time(msec) >= timeOut)
     {
       LeftMotor.stop(brake);
       RightMotor.stop(brake);
@@ -137,7 +139,7 @@ void turnToHeadingPID(double targetHeading)
   }
 }
 
-void driveToDistancePID(double targetDistance, double headingToHold)
+void driveToDistancePID(double targetDistance, double headingToHold, double timeOut)
 {
   DistanceIntegral = 0;
   linearPreviousError = 0;
@@ -160,6 +162,8 @@ void driveToDistancePID(double targetDistance, double headingToHold)
   double kdHeading = 0.1;
 
   double headingToHoldThreshold = 2;
+
+  timer myTimer;
 
   LeftMotor.setPosition(0, degrees);
   RightMotor.setPosition(0, degrees);
@@ -194,19 +198,8 @@ void driveToDistancePID(double targetDistance, double headingToHold)
     if (speed < -50)
       speed = -50;
 
-    // Spin both motors forward to drive straight
-
-
-    // Break loop if distance is close enough
-    if (fabs(error) <= threshold && headingToHold  <= headingToHoldThreshold);
-    {
-      LeftMotor.stop(brake);
-      RightMotor.stop(brake);
-      break;
-    }
-
     float currentHeading = BrainInertial.heading(degrees);
-    headingError = currentHeading - headingToHold;
+    headingError = headingToHold - currentHeading;
 
     if (headingError > 180)
       headingError -= 360;
@@ -237,6 +230,14 @@ void driveToDistancePID(double targetDistance, double headingToHold)
     LeftMotor.spin(forward, leftSpeed, percent);
     RightMotor.spin(forward, rightSpeed, percent);
 
+    if ((fabs(error) <= threshold && fabs(headingError) <= headingToHoldThreshold) || myTimer.time(msec) >= timeOut)
+    {
+      LeftMotor.stop(brake);
+      RightMotor.stop(brake);
+      break;
+    }
+    
+
     // Short delay
     this_thread::sleep_for(20);
   }
@@ -247,10 +248,10 @@ int main()
   // Initializing Robot Configuration. DO NOT REMOVE!
   vexcodeInit();
 
-  driveToDistancePID(300, 0);
-  turnToHeadingPID(90);
-  driveToDistancePID(400, 90);
-  turnToHeadingPID(180);
+  driveToDistancePID(300, 0, 4000);
+  turnToHeadingPID(90, 2000);
+  driveToDistancePID(400, 90, 4000);
+  turnToHeadingPID(180, 2000);
 
   return 0;
 }
