@@ -9,7 +9,11 @@
 
 #include "iq2_cpp.h"
 
-
+// Forward declarations
+extern vex::brain Brain;
+extern vex::inertial BrainInertial;
+extern vex::motor LeftMotor;
+extern vex::motor RightMotor;
 
 #endif
 
