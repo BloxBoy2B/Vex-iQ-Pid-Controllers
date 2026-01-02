@@ -3,132 +3,234 @@
 
 using namespace vex;
 
-// Constructor
-driveToDistance::driveToDistance(float distanceProportional, float distanceIntegral,
-                                float distanceDerivative, int distanceErrorThreshold,
-                                float headingProportional, float headingIntegral,
-                                float headingDerivative, int headingErrorThreshold)
+driveToDistance::driveToDistance(float distanceProportional, float distanceIntegralGain, float distanceDerivative, int distanceErrorThreshold,
+                                 float headingProportional, float headingIntegralGain, float headingDerivative, int headingErrorThreshold,
+                                 vex::distance *sensor1, vex::distance *sensor2, vex::distance *sensor3, vex::distance *sensor4)
 {
-    // Distance PID parameters
     kp = distanceProportional;
-    ki = distanceIntegral;
+    ki = distanceIntegralGain;
     kd = distanceDerivative;
     threshold = distanceErrorThreshold;
 
-    // Heading PID parameters
     kpHeading = headingProportional;
-    kiHeading = headingIntegral;
+    kiHeading = headingIntegralGain;
     kdHeading = headingDerivative;
     headingToHoldThreshold = headingErrorThreshold;
 
-    // Initialize state variables
     distanceIntegral = 0;
     distancePreviousError = 0;
     headingIntegral = 0;
     headingPreviousError = 0;
+
+    wallKp = 0.1f;
+    wallMaxCorrection = 15.0f;
+    distanceOffset = 0.0f;
+    distanceOffsetScale = 1.0f;
+    gearRatio = 1.0f;
+
+    distanceSensors[0] = sensor1;
+    distanceSensors[1] = sensor2;
+    distanceSensors[2] = sensor3;
+    distanceSensors[3] = sensor4;
 }
 
-// Destructor
 driveToDistance::~driveToDistance()
 {
 }
 
-// Execute the PID control loop
-void driveToDistance::execute(double targetDistance, double headingToHold, double timeOut)
+vex::distance *driveToDistance::getDistanceSensor(int sensorIndex) const
 {
-    // Reset integral and previous error
+    if (sensorIndex < 1 || sensorIndex > 4)
+    {
+        return nullptr;
+    }
+    return distanceSensors[sensorIndex - 1];
+}
+
+float driveToDistance::clamp(float value, float minValue, float maxValue) const
+{
+    if (value < minValue)
+    {
+        return minValue;
+    }
+    if (value > maxValue)
+    {
+        return maxValue;
+    }
+    return value;
+}
+
+float driveToDistance::readDistanceMm(int sensorIndex) const
+{
+    vex::distance *sensor = getDistanceSensor(sensorIndex);
+    if (sensor == nullptr)
+    {
+        return -1.0f;
+    }
+    return sensor->objectDistance(mm);
+}
+
+float driveToDistance::readDistanceMm(vex::distance *sensor) const
+{
+    if (sensor == nullptr)
+    {
+        return -1.0f;
+    }
+    return sensor->objectDistance(mm);
+}
+
+void driveToDistance::setDistanceSensor(int slot, vex::distance *sensor)
+{
+    if (slot < 1 || slot > 4)
+    {
+        return;
+    }
+    distanceSensors[slot - 1] = sensor;
+}
+
+void driveToDistance::setWallCorrection(float proportional, float maxCorrection)
+{
+    wallKp = proportional;
+    wallMaxCorrection = maxCorrection;
+}
+
+void driveToDistance::setDistanceOffsetScale(float scale)
+{
+    distanceOffsetScale = scale;
+}
+
+void driveToDistance::setGearRatio(int motorTeeth, int wheelTeeth)
+{
+    if (motorTeeth <= 0 || wheelTeeth <= 0)
+    {
+        return;
+    }
+    gearRatio = static_cast<float>(motorTeeth) / static_cast<float>(wheelTeeth);
+}
+
+void driveToDistance::setGearRatio(const char *ratioText)
+{
+    if (ratioText == nullptr)
+    {
+        return;
+    }
+
+    const char *separator = strchr(ratioText, ':');
+    if (separator == nullptr)
+    {
+        return;
+    }
+
+    int motorTeeth = atoi(ratioText);
+    int wheelTeeth = atoi(separator + 1);
+    setGearRatio(motorTeeth, wheelTeeth);
+}
+
+void driveToDistance::execute(double targetDistance, double headingToHold, double timeOut,
+                              int xSensorIndex, double xTargetDistance,
+                              int ySensorIndex, double yTargetDistance)
+{
+    vex::distance *xSensor = getDistanceSensor(xSensorIndex);
+    vex::distance *ySensor = getDistanceSensor(ySensorIndex);
+    execute(targetDistance, headingToHold, timeOut, xSensor, xTargetDistance, ySensor, yTargetDistance);
+}
+
+void driveToDistance::execute(double targetDistance, double headingToHold, double timeOut,
+                              vex::distance *xSensor, double xTargetDistance,
+                              vex::distance *ySensor, double yTargetDistance)
+{
     distanceIntegral = 0;
     distancePreviousError = 0;
     headingIntegral = 0;
     headingPreviousError = 0;
 
+    float error = 0;
+    float speed = 0;
+    float derivative = 0;
+
+    float headingError = 0;
+    float headingDerivative = 0;
+    float headingCorrection = 0;
+
     timer myTimer;
 
-    // Reset motor positions
     LeftMotor.setPosition(0, degrees);
     RightMotor.setPosition(0, degrees);
 
+    const float degreesPerMm = (360.0f * gearRatio) / (static_cast<float>(M_PI) * 200.0f);
+    double adjustedTargetDistance = (targetDistance + distanceOffset) * degreesPerMm;
+
     while (true)
     {
-        // Get average position of both motors (in degrees)
-        float currentDistance = (LeftMotor.position(degrees) + RightMotor.position(degrees)) / 2.0;
+        float currentDistance = (LeftMotor.position(degrees) + RightMotor.position(degrees)) / 2.0f;
+        error = adjustedTargetDistance - currentDistance;
 
-        // Distance PID calculation
-        float distanceError = targetDistance - currentDistance;
-
-        distanceIntegral += distanceError;
-
-        // Anti-windup for distance integral
-        if (distanceIntegral > 400)
-            distanceIntegral = 400;
-        if (distanceIntegral < -400)
-            distanceIntegral = -400;
-
-        // Reset integral when close to target
-        if (fabs(distanceError) < 5)
+        distanceIntegral += error;
+        distanceIntegral = clamp(distanceIntegral, -400.0f, 400.0f);
+        if (fabs(error) < 5)
+        {
             distanceIntegral = 0;
+        }
 
-        float distanceDerivative = distanceError - distancePreviousError;
-        distancePreviousError = distanceError;
+        derivative = error - distancePreviousError;
+        distancePreviousError = error;
 
-        float speed = (kp * distanceError) + (ki * distanceIntegral) + (kd * distanceDerivative);
+        speed = (kp * error) + (ki * distanceIntegral) + (kd * derivative);
+        speed = clamp(speed, -50.0f, 50.0f);
 
-        // Constrain speed
-        if (speed > 50)
-            speed = 50;
-        if (speed < -50)
-            speed = -50;
-
-        // Heading PID calculation
         float currentHeading = BrainInertial.heading(degrees);
-        float headingError = headingToHold - currentHeading;
+        headingError = headingToHold - currentHeading;
 
-        // Normalize heading error to -180 to 180 range
         if (headingError > 180)
+        {
             headingError -= 360;
+        }
         if (headingError < -180)
+        {
             headingError += 360;
+        }
 
         headingIntegral += headingError;
-
-        // Anti-windup for heading integral
-        if (headingIntegral > 100)
-            headingIntegral = 100;
-        if (headingIntegral < -100)
-            headingIntegral = -100;
-
-        // Reset integral when close to target heading
+        headingIntegral = clamp(headingIntegral, -100.0f, 100.0f);
         if (fabs(headingError) < 2)
+        {
             headingIntegral = 0;
+        }
 
-        float headingDerivative = headingError - headingPreviousError;
+        headingDerivative = headingError - headingPreviousError;
         headingPreviousError = headingError;
 
-        float headingCorrection = (kpHeading * headingError) + (kiHeading * headingIntegral) + (kdHeading * headingDerivative);
+        headingCorrection = (kpHeading * headingError) + (kiHeading * headingIntegral) + (kdHeading * headingDerivative);
+        headingCorrection = clamp(headingCorrection, -20.0f, 20.0f);
 
-        // Constrain heading correction
-        if (headingCorrection > 20)
-            headingCorrection = 20;
-        if (headingCorrection < -20)
-            headingCorrection = -20;
+        float xDistance = readDistanceMm(xSensor);
+        if (xDistance >= 0)
+        {
+            float xError = static_cast<float>(xTargetDistance) - xDistance;
+            float xCorrection = clamp(wallKp * xError, -wallMaxCorrection, wallMaxCorrection);
+            headingCorrection += xCorrection;
+        }
 
-        // Apply differential drive
         float leftSpeed = speed + headingCorrection;
         float rightSpeed = speed - headingCorrection;
 
         LeftMotor.spin(forward, leftSpeed, percent);
         RightMotor.spin(forward, rightSpeed, percent);
 
-        // Check if we're done (both distance and heading are within thresholds, or timeout)
-        if ((fabs(distanceError) <= threshold && fabs(headingError) <= headingToHoldThreshold) ||
-            myTimer.time(msec) >= timeOut)
+        if ((fabs(error) <= threshold && fabs(headingError) <= headingToHoldThreshold) || myTimer.time(msec) >= timeOut)
         {
             LeftMotor.stop(brake);
             RightMotor.stop(brake);
             break;
         }
 
-        // Short delay
         this_thread::sleep_for(20);
+    }
+
+    float yDistance = readDistanceMm(ySensor);
+    if (yDistance >= 0)
+    {
+        float yError = static_cast<float>(yTargetDistance) - yDistance;
+        distanceOffset += yError * distanceOffsetScale;
     }
 }

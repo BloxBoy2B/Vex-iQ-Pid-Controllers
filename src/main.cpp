@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "vex.h"
+#include "turnToHeadingPID.h"
+#include "driveToDistance.h"
 
 using namespace vex;
 
@@ -28,6 +30,10 @@ brain Brain;
 inertial BrainInertial = inertial();
 motor LeftMotor = motor(PORT1, false);
 motor RightMotor = motor(PORT6, true);
+distance Distance1 = distance(PORT2);
+distance Distance2 = distance(PORT3);
+distance Distance3 = distance(PORT4);
+distance Distance4 = distance(PORT5);
 
 // generating and setting random seed
 void initializeRandomSeed()
@@ -60,198 +66,22 @@ void vexcodeInit()
 // Allows for easier use of the VEX Library
 using namespace vex;
 
-float angularIntegral = 0;
-float DistanceIntegral = 0;
-float angularPreviousError = 0;
-float linearPreviousError = 0;
-
-// "when started" hat block
-int whenStarted1()
-{
-  return 0;
-}
-
-#include "vex.h"
-
-// This function turns the robot to a given heading using PID
-void turnToHeadingPID(double targetHeading, double timeOut)
-{
-  angularIntegral = 0;
-  angularPreviousError = 0;
-
-  float error = 0;
-  float speed = 0;
-  float robotHeading = 0;
-  float derivative = 0;
-  double kp = 0.5;
-  double ki = 0.2;
-  double kd = 0.3;
-
-  int threshold = 2;
-
-  timer myTimer;
-
-  while (true)
-  {
-    robotHeading = BrainInertial.heading(degrees);
-
-    error = targetHeading - robotHeading;
-    if (error > 180)
-      error -= 360;
-    if (error < -180)
-      error += 360;
-
-    angularIntegral += error;
-
-    if (angularIntegral > 400)
-      angularIntegral = 400;
-    if (angularIntegral < -400)
-      angularIntegral = -400;
-
-    if (fabs(error) < 2)
-      angularIntegral = 0;
-
-    derivative = error - angularPreviousError;
-    angularPreviousError = error;
-
-    speed = (kp * error) + (ki * angularIntegral) + (kd * derivative);
-
-    // Constrain speed (optional, prevents crazy motor values)
-    if (speed > 50)
-      speed = 50;
-    if (speed < -50)
-      speed = -50;
-
-    // Spin left/right motors to turn
-    LeftMotor.spin(forward, speed, percent);
-    RightMotor.spin(forward, -speed, percent);
-
-    // Break loop if heading is close enough
-    if (fabs(error) <= threshold || myTimer.time(msec) >= timeOut)
-    {
-      LeftMotor.stop(brake);
-      RightMotor.stop(brake);
-      break;
-    }
-
-    // Short delay
-    this_thread::sleep_for(20);
-  }
-}
-
-void driveToDistancePID(double targetDistance, double headingToHold, double timeOut)
-{
-  DistanceIntegral = 0;
-  linearPreviousError = 0;
-
-  float error = 0;
-  float speed = 0;
-  float derivative = 0;
-  double kp = 0.5;
-  double ki = 0.01;
-  double kd = 0.3;
-
-  float headingError = 0;
-  float headingIntegral = 0;
-  float headingPreviousError = 0;
-  float headingDerivative = 0;
-  float headingCorrection = 0;
-
-  double kpHeading = 0.3;
-  double kiHeading = 0.05;
-  double kdHeading = 0.1;
-
-  double headingToHoldThreshold = 2;
-
-  timer myTimer;
-
-  LeftMotor.setPosition(0, degrees);
-  RightMotor.setPosition(0, degrees);
-
-  // You can adjust this threshold for how close is 'good enough'
-  int threshold = 10;
-
-  while (true)
-  {
-    // Get average position of both motors (in degrees)
-    float currentDistance = (LeftMotor.position(degrees) + RightMotor.position(degrees)) / 2.0;
-
-    error = targetDistance - currentDistance;
-
-    DistanceIntegral += error;
-
-    if (DistanceIntegral > 400)
-      DistanceIntegral = 400;
-    if (DistanceIntegral < -400)
-      DistanceIntegral = -400;
-
-    if (fabs(error) < 5)
-      DistanceIntegral = 0;
-
-    derivative = error - linearPreviousError;
-    linearPreviousError = error;
-
-    speed = (kp * error) + (ki * DistanceIntegral) + (kd * derivative);
-
-    if (speed > 50)
-      speed = 50;
-    if (speed < -50)
-      speed = -50;
-
-    float currentHeading = BrainInertial.heading(degrees);
-    headingError = headingToHold - currentHeading;
-
-    if (headingError > 180)
-      headingError -= 360;
-    if (headingError < -180)
-      headingError += 360;
-
-    headingIntegral += headingError;
-    if (headingIntegral > 100)
-      headingIntegral = 100;
-    if (headingIntegral < -100)
-      headingIntegral = -100;
-    if (fabs(headingError) < 2)
-      headingIntegral = 0;
-
-    headingDerivative = headingError - headingPreviousError;
-    headingPreviousError = headingError;
-
-    headingCorrection = (kpHeading * headingError) + (kiHeading * headingIntegral) + (kdHeading * headingDerivative);
-
-    if (headingCorrection > 20)
-      headingCorrection = 20;
-    if (headingCorrection < -20)
-      headingCorrection = -20;
-
-    float leftSpeed = speed + headingCorrection;
-    float rightSpeed = speed - headingCorrection;
-
-    LeftMotor.spin(forward, leftSpeed, percent);
-    RightMotor.spin(forward, rightSpeed, percent);
-
-    if ((fabs(error) <= threshold && fabs(headingError) <= headingToHoldThreshold) || myTimer.time(msec) >= timeOut)
-    {
-      LeftMotor.stop(brake);
-      RightMotor.stop(brake);
-      break;
-    }
-    
-
-    // Short delay
-    this_thread::sleep_for(20);
-  }
-}
-
 int main()
 {
   // Initializing Robot Configuration. DO NOT REMOVE!
   vexcodeInit();
 
-  driveToDistancePID(300, 0, 4000);
-  turnToHeadingPID(90, 2000);
-  driveToDistancePID(400, 90, 4000);
-  turnToHeadingPID(180, 2000);
+  TurnToHeadingPID turnPID(0.6, 0.15, 0.35, 2);
+  driveToDistance drivePID(0.5, 0.01, 0.3, 10, 0.3, 0.05, 0.1, 2,
+                           &Distance1, &Distance2, &Distance3, &Distance4);
+  drivePID.setGearRatio("36:12");
+  drivePID.setWallCorrection(0.1, 15.0);
+  drivePID.setDistanceOffsetScale(1.0);
+
+  drivePID.execute(300, 0, 4000, &Distance2, 371, &Distance1, 300);
+  turnPID.execute(90, 2000);
+  drivePID.execute(400, 90, 4000, &Distance2, 371, &Distance1, 400);
+  turnPID.execute(180, 2000);
 
   return 0;
 }
